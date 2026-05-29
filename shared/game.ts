@@ -116,10 +116,43 @@ function move(board: Board, dir: Direction): { board: Board; score: number } {
   return { board: finalBoard, score: result.score };
 }
 
-export function makeMove(board: Board, dir: Direction): { board: Board; score: number; moved: boolean } {
+export type MoveResult = {
+  board: Board;
+  score: number;
+  moved: boolean;
+  newPositions: [number, number][];
+  mergedPositions: [number, number][];
+  boardGen: number;
+};
+
+export function makeMove(
+  board: Board,
+  dir: Direction,
+  prevBoard?: Board,
+  boardGen?: number,
+): MoveResult {
   const result = move(board, dir);
   const moved = !boardsEqual(board, result.board);
-  return { board: moved ? addRandomTile(result.board) : board, score: result.score, moved };
+  const finalBoard = moved ? addRandomTile(result.board) : board;
+
+  const newPositions: [number, number][] = [];
+  const mergedPositions: [number, number][] = [];
+
+  if (prevBoard && moved) {
+    for (let r = 0; r < 4; r++) {
+      for (let c = 0; c < 4; c++) {
+        const prev = prevBoard[r][c];
+        const curr = finalBoard[r][c];
+        if (prev === 0 && curr !== 0) {
+          newPositions.push([r, c]);
+        } else if (prev !== 0 && curr !== 0 && curr === prev * 2) {
+          mergedPositions.push([r, c]);
+        }
+      }
+    }
+  }
+
+  return { board: finalBoard, score: result.score, moved, newPositions, mergedPositions, boardGen: boardGen ?? 0 };
 }
 
 function boardsEqual(a: Board, b: Board): boolean {

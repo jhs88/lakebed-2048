@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "preact/hooks";
 import { SignInWithGoogle, signOut, useAuth, useMutation, useQuery } from "lakebed/client";
-import { createNewBoard, makeMove, hasWon, isGameOver, type Board, type Direction } from "../shared/game";
+import { createNewBoard, makeMove, hasWon, isGameOver, type Board, type Direction, type MoveResult } from "../shared/game";
 
 type LeaderboardEntry = {
   id: string;
@@ -12,9 +12,47 @@ type LeaderboardEntry = {
 
 type Page = "game" | "scores";
 
+// ── Animation keyframes (injected once) ────────────────────────
+
+const animationStyleId = "game-animations";
+
+function useAnimationStyles() {
+  useEffect(() => {
+    if (document.getElementById(animationStyleId)) return;
+    const style = document.createElement("style");
+    style.id = animationStyleId;
+    style.textContent = `
+      @keyframes tileSpawn {
+        0% { opacity: 0; transform: scale(0); }
+        100% { opacity: 1; transform: scale(1); }
+      }
+      @keyframes tileMerge {
+        0% { transform: scale(1); }
+        40% { transform: scale(1.18); }
+        100% { transform: scale(1); }
+      }
+      @keyframes scorePulse {
+        0% { transform: scale(1); }
+        40% { transform: scale(1.18); color: #fbbf24; }
+        100% { transform: scale(1); color: inherit; }
+      }
+      .animate-tile-spawn {
+        animation: tileSpawn 200ms ease-out both;
+      }
+      .animate-tile-merge {
+        animation: tileMerge 150ms ease-in-out both;
+      }
+      .animate-score-pulse {
+        animation: scorePulse 200ms ease-in-out both;
+      }
+    `;
+    document.head.appendChild(style);
+  }, []);
+}
+
 // Tile color map for Tailwind classes
 function tileClasses(value: number): string {
-  const base = "flex items-center justify-center font-bold rounded-lg transition-all duration-100 select-none";
+  const base = "flex items-center justify-center font-bold rounded-lg transition-all duration-150 select-none";
   switch (value) {
     case 0: return `${base} bg-neutral-800`;
     case 2: return `${base} bg-stone-200 text-stone-700`;
@@ -144,14 +182,19 @@ function ScoresPage() {
 // ── Game page ──────────────────────────────────────────────────
 
 function GamePage() {
+  useAnimationStyles();
   const bestScoreData = useQuery<{ bestScore: number; hasPlayed: boolean }>("bestScore");
   const saveScore = useMutation<[score: number, won: boolean], void>("saveScore");
 
   const [board, setBoard] = useState<Board>(createNewBoard);
   const [score, setScore] = useState(0);
+  const [prevScore, setPrevScore] = useState(0);
+  const [scorePulse, setScorePulse] = useState(false);
   const [gameOver, setGameOver] = useState(false);
   const [won, setWon] = useState(false);
   const [keepPlaying, setKeepPlaying] = useState(false);
+  const [lastResult, setLastResult] = useState<MoveResult | null>(null);
+  const boardGenRef = useRef(0);
 
   useEffect(() => {
     if ((gameOver || (won && !keepPlaying)) && score > 0) {
@@ -160,16 +203,27 @@ function GamePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gameOver, won, keepPlaying]);
 
+  // Score pulse effect
+  useEffect(() => {
+    if (score > prevScore) {
+      setScorePulse(true);
+      const t = setTimeout(() => setScorePulse(false), 200);
+      return () => clearTimeout(t);
+    }
+    setPrevScore(score);
+  }, [score]);
+
   const bestScore = bestScoreData?.bestScore ?? 0;
 
   const handleMove = useCallback((dir: Direction) => {
     if (gameOver || (won && !keepPlaying)) return;
 
     setBoard((prev) => {
-      const result = makeMove(prev, dir);
+      const result = makeMove(prev, dir, prev, boardGenRef.current);
       if (!result.moved) return prev;
 
       setScore((s) => s + result.score);
+      setLastResult(result);
 
       if (!won && hasWon(result.board)) {
         setWon(true);
@@ -184,9 +238,12 @@ function GamePage() {
   const resetGame = () => {
     setBoard(createNewBoard());
     setScore(0);
+    setPrevScore(0);
     setGameOver(false);
     setWon(false);
     setKeepPlaying(false);
+    setLastResult(null);
+    boardGenRef.current++;
   };
 
   const keyDown = useCallback(
@@ -251,7 +308,7 @@ function GamePage() {
         <div className="flex items-center gap-3">
           <div className="flex flex-col items-end">
             <span className="text-xs font-medium uppercase tracking-widest text-neutral-500">Score</span>
-            <span className="text-xl font-bold">{score}</span>
+            <span className={`text-xl font-bold ${scorePulse ? "animate-score-pulse" : ""}`}>{score}</span>
           </div>
           <div className="flex flex-col items-end">
             <span className="text-xs font-medium uppercase tracking-widest text-neutral-500">Best</span>
@@ -267,14 +324,20 @@ function GamePage() {
         onTouchEnd={handleTouchEnd}
       >
         <div className="grid grid-cols-4 gap-2">
-          {board.flat().map((value, i) => (
-            <div
-              key={i}
-              className={`aspect-square ${tileClasses(value)} ${tileSize(value)}`}
-            >
-              {value || ""}
-            </div>
-          ))}
+          {board.map((row, r) => row.map((value, c) => {
+            const isGenNew = boardGenRef.current > 0 && (!lastResult || lastResult.boardGen !== boardGenRef.current);
+            const isNew = !isGenNew && lastResult?.newPositions.some(([pr, pc]) => pr === r && pc === c);
+            const isMerged = !isGenNew && lastResult?.mergedPositions.some(([pr, pc]) => pr === r && pc === c);
+            const animClass = isGenNew || isNew ? "animate-tile-spawn" : isMerged ? "animate-tile-merge" : "";
+            return (
+              <div
+                key={`${r}-${c}`}
+                className={`aspect-square ${tileClasses(value)} ${tileSize(value)} ${animClass}`}
+              >
+                {value || ""}
+              </div>
+            );
+          }))}
         </div>
 
         {/* Game Over overlay */}
